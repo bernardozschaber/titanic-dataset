@@ -57,6 +57,7 @@ class MyStrategy(FedAvg):
         self.m = self.min_fit_clients
 
     def configure_fit(self, server_round, parameters, client_manager):
+        # Aguarda até que clientes suficientes estejam disponíveis
         client_manager.wait_for(self.m)
         available_clients = list(client_manager.clients.values())
 

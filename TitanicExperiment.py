@@ -1,109 +1,130 @@
 from flautim.pytorch.federated.Experiment import Experiment
-import flautim as fl
-import numpy as np
 import torch
+import numpy as np
+
 from collections import OrderedDict
-from math import inf
+from sklearn.metrics import f1_score
 
 
-# ------------------------------------------------------------------
-# Funções auxiliares no escopo do módulo (importáveis via from ... import)
-# ------------------------------------------------------------------
 def set_params(model, parameters):
-    """Substitui os parâmetros do modelo pelos parâmetros recebidos."""
+    """Substitui os parâmetros do modelo pelos recebidos do servidor."""
     params_dict = zip(model.state_dict().keys(), parameters)
-    state_dict  = OrderedDict({k: torch.from_numpy(v) for k, v in params_dict})
+    state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     model.load_state_dict(state_dict, strict=True)
 
 
 def get_params(model):
-    """Extrai os parâmetros do modelo como lista de arrays NumPy."""
-    return [val.cpu().numpy() for _, val in model.state_dict().items()]
+    """Extrai os parâmetros do modelo como lista de NumPy arrays."""
+    return [val.detach().cpu().numpy() for _, val in model.state_dict().items()]
 
 
-# ------------------------------------------------------------------
-# Classe do experimento
-# ------------------------------------------------------------------
 class TitanicExperiment(Experiment):
+    """
+    Experimento federado simples para o dataset Titanic.
+    """
 
     def __init__(self, model, dataset, context, **kwargs):
         super(TitanicExperiment, self).__init__(model, dataset, context, **kwargs)
 
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.01)
-        self.epochs    = kwargs.get('epochs', 5)
-        self.device    = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.last_loss = inf
+        self.optimizer = torch.optim.SGD(
+            self.model.parameters(),
+            lr=kwargs.get("lr", 0.01),
+            momentum=kwargs.get("momentum", 0.9),
+            weight_decay=kwargs.get("weight_decay", 0.0),
+        )
+        self.epochs = kwargs.get("epochs", 1)
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.data_size = len(dataset.train_partition)
 
-        # Compatível com TitanicDataset centralizado (usa .features via .train())
-        self.data_size = len(dataset.train().features)
-
-    # ------------------------------------------------------------------
-    # Power of Choice: epochs=-1 (data_size), 0 (local_loss), N (treino)
-    # ------------------------------------------------------------------
     def fit(self, parameters, config):
+        """
+        Método chamado pelo servidor em cada rodada federada.
+        """
         set_params(self.model, parameters)
+
         epochs = config.get("epochs", self.epochs)
 
-        if epochs == -1:
-            return parameters, 0, {"data_size": self.data_size}
+        self.model.to(self.device)
 
-        if epochs == 0:
-            local_loss, _ = self.validation_loop(self.dataset.dataloader(validation=True))
-            local_loss += np.random.uniform(low=1e-10, high=1e-9)
-            return parameters, 0, {"local_loss": local_loss}
+        final_loss = 0.0
+        final_metrics = {}
 
-        loss, metrics = self.training_loop(self.dataset.dataloader())
-        return get_params(self.model), self.data_size, metrics
+        for _ in range(epochs):
+            final_loss, final_metrics = self.training_loop(self.dataset.dataloader())
 
-    # ------------------------------------------------------------------
-    # Training loop
-    # ------------------------------------------------------------------
+        return get_params(self.model), self.data_size, final_metrics
+
     def training_loop(self, data_loader):
+        """
+        Treinamento local no cliente.
+        """
         self.model.to(self.device)
         self.model.train()
 
-        running_loss, correct, total = 0.0, 0, 0
+        running_loss = 0.0
+        correct = 0
+        total = 0
 
-        for X, y in data_loader:
-            X, y = X.to(self.device), y.to(self.device)
+        for batch in data_loader:
+            features = batch["features"].to(self.device)
+            labels = batch["label"].to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(X)
-            loss    = self.criterion(outputs, y)
+
+            outputs = self.model(features)
+            loss = self.criterion(outputs, labels)
+
             loss.backward()
             self.optimizer.step()
 
             running_loss += loss.item()
-            _, predicted  = torch.max(outputs, 1)
-            correct += (predicted == y).sum().item()
-            total   += y.size(0)
+            preds = torch.argmax(outputs, dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
 
-        avg_loss       = running_loss / len(data_loader)
-        accuracy       = correct / total if total > 0 else 0.0
-        self.last_loss = avg_loss
+        avg_loss = running_loss / len(data_loader) if len(data_loader) > 0 else 0.0
+        accuracy = correct / total if total > 0 else 0.0
 
-        return float(avg_loss), {'ACCURACY': accuracy}
+        return float(avg_loss), {"ACCURACY": accuracy}
 
-    # ------------------------------------------------------------------
-    # Validation loop
-    # ------------------------------------------------------------------
     def validation_loop(self, data_loader):
+        """
+        Avaliação local no conjunto de validação do cliente.
+        """
         self.model.to(self.device)
         self.model.eval()
 
-        running_loss, correct, total = 0.0, 0, 0
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        all_predictions = []
+        all_labels = []
 
         with torch.no_grad():
-            for X, y in data_loader:
-                X, y    = X.to(self.device), y.to(self.device)
-                outputs = self.model(X)
-                running_loss += self.criterion(outputs, y).item()
-                _, predicted  = torch.max(outputs, 1)
-                correct += (predicted == y).sum().item()
-                total   += y.size(0)
+            for batch in data_loader:
+                features = batch["features"].to(self.device)
+                labels = batch["label"].to(self.device)
 
-        avg_loss = running_loss / len(data_loader)
+                outputs = self.model(features)
+                loss = self.criterion(outputs, labels)
+
+                running_loss += loss.item()
+
+                preds = torch.argmax(outputs, dim=1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+
+                all_predictions.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
+        avg_loss = running_loss / len(data_loader) if len(data_loader) > 0 else 0.0
         accuracy = correct / total if total > 0 else 0.0
 
-        return float(avg_loss), {'ACCURACY': accuracy}
+        if len(set(all_labels)) > 1 and len(set(all_predictions)) > 1:
+            f1 = f1_score(all_labels, all_predictions, average="macro")
+        else:
+            f1 = 0.0
+
+        return float(avg_loss), {"ACCURACY": accuracy, "F1_SCORE": f1}

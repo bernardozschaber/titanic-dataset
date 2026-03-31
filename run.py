@@ -1,152 +1,271 @@
 from flautim.pytorch.common import run_federated, weighted_average
-from flautim.pytorch.federated import Experiment
-import TitanicDataset, TitanicModel, TitanicExperiment
-from TitanicExperiment import get_params
-
 import flautim as fl
-import pandas as pd
-import numpy as np
+
+from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.server import ServerConfig, ServerAppComponents
+from flwr.server.strategy import FedAvg
+
+from collections import OrderedDict
+from datetime import datetime
+from pathlib import Path
+
 import torch
 
-from flwr.common import Context, ndarrays_to_parameters, Parameters, FitIns
-from flwr.server import ServerConfig, ServerAppComponents
-from flwr.server.client_manager import ClientManager
-from flwr.server.client_proxy import ClientProxy
-from flwr.server.strategy import FedAvg, DifferentialPrivacyServerSideFixedClipping
+import TitanicDataset
+import TitanicModel
+import TitanicExperiment
+from TitanicExperiment import get_params
 
-NUM_PARTITIONS = 10
+# -----------------------------
+# Configurações do experimento
+# -----------------------------
+NUM_CLIENTS = 4
+CSV_PATH = "./data/titanic.csv"
+BATCH_SIZE = 32
+LOCAL_EPOCHS = 2
+NUM_ROUNDS = 20
 
-def load_and_preprocess():
-    titanic = pd.read_csv("./data/Titanic-Dataset.csv")
-    titanic['Sex']        = titanic['Sex'].map({'male': 0, 'female': 1})
-    titanic['Age']        = titanic['Age'].fillna(titanic['Age'].median())
-    titanic['Fare']       = titanic['Fare'].fillna(0.0)
-    titanic['Title']      = titanic['Name'].str.extract(r' ([A-Za-z]+)\.', expand=False)
-    titanic['Title']      = titanic['Title'].map({'Mr': 0, 'Miss': 1, 'Mrs': 2, 'Master': 3}).fillna(4)
-    titanic['FamilySize'] = titanic['SibSp'] + titanic['Parch'] + 1
-    titanic['IsAlone']    = (titanic['FamilySize'] == 1).astype(int)
-    titanic['Embarked']   = titanic['Embarked'].fillna('S').map({'S': 0, 'C': 1, 'Q': 2})
-    titanic['Deck']       = titanic['Cabin'].apply(lambda x: str(x)[0] if pd.notna(x) else 'U')
-    titanic['Deck']       = pd.factorize(titanic['Deck'])[0]
-    titanic = titanic[['Survived', 'Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare',
-                        'Title', 'FamilySize', 'IsAlone', 'Embarked', 'Deck']]
-    return titanic.sample(frac=1, random_state=42).reset_index(drop=True)
 
-def dirichlet_partition(df, n_clients, alpha=0.3, seed=42):
-    rng    = np.random.default_rng(seed)
-    labels = df['Survived'].values
-    classes = np.unique(labels)
-    client_indices = [[] for _ in range(n_clients)]
-    for cls in classes:
-        cls_indices = np.where(labels == cls)[0]
-        rng.shuffle(cls_indices)
-        proportions = rng.dirichlet(alpha=np.repeat(alpha, n_clients))
-        splits = (proportions * len(cls_indices)).astype(int)
-        splits[-1] = len(cls_indices) - splits[:-1].sum()
-        start = 0
-        for cid, count in enumerate(splits):
-            client_indices[cid].extend(cls_indices[start:start + count].tolist())
-            start += count
-    return [df.iloc[idx].reset_index(drop=True) for idx in client_indices]
+class CustomFedAvg(FedAvg):
+    """FedAvg extended to save the best global model per round based on accuracy."""
 
-class MyStrategy(FedAvg):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, context, input_dim, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.p = []
-        self.d = 5
-        self.m = self.min_fit_clients
 
-    def configure_fit(self, server_round, parameters, client_manager):
-        # Aguarda até que clientes suficientes estejam disponíveis
-        client_manager.wait_for(self.m)
-        available_clients = list(client_manager.clients.values())
+        self.best_acc_so_far = 0.0
+        self.round_results = []
 
-        print(f"Round {server_round} — clientes: {[c.cid for c in available_clients]}")
+        # Create timestamped output directory
+        run_dir = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
+        self.save_path = Path.cwd() / f"outputs/{run_dir}"
+        self.save_path.mkdir(parents=True, exist_ok=True)
 
-        if not available_clients:
-            return []
+        self._context = context
+        self._input_dim = input_dim
 
-        if self.p == [] or len(self.p) != len(available_clients):
-            data_sizes = {
-                client.cid: client.fit(
-                    FitIns(parameters, {"epochs": -1}), timeout=60, group_id=str(client.cid)
-                ).metrics.get("data_size", 1)
-                for client in available_clients
-            }
-            total = sum(data_sizes.values()) or 1
-            p_np  = np.array([size / total for size in data_sizes.values()], dtype=float)
-            p_np  = np.clip(p_np, 1e-10, None)
-            p_np /= p_np.sum()
-            self.p = p_np.tolist()
+    def _update_best_acc(self, server_round, accuracy, parameters):
+        """Save model checkpoint when a new best accuracy is found."""
+        if accuracy > self.best_acc_so_far:
+            self.best_acc_so_far = accuracy
+            fl.log(f"New best global model found: {accuracy:.6f}")
 
-        n_candidates = min(self.d, len(available_clients))
-        candidate_clients = np.random.choice(
-            available_clients, size=n_candidates, p=self.p, replace=False
-        )
-        local_losses = {
-            client.cid: client.fit(
-                FitIns(parameters, {"epochs": 0}), timeout=60, group_id=str(client.cid)
-            ).metrics.get("local_loss", float("inf"))
-            for client in candidate_clients
-        }
-        selected_cids = sorted(local_losses, key=local_losses.get, reverse=True)[:self.m]
-        print(f"  Selecionados: {selected_cids}")
-        return [(client_manager.clients.get(cid), FitIns(parameters, {})) for cid in selected_cids]
+            ndarrays = parameters_to_ndarrays(parameters)
+            params_dict = zip(
+                TitanicModel.TitanicModel(
+                    self._context, input_dim=self._input_dim, suffix="tmp"
+                ).state_dict().keys(),
+                ndarrays,
+            )
+            state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
 
-def fit_config(server_round):
-    return {"server_round": server_round}
+            file_name = f"model_acc_{accuracy:.6f}_round_{server_round}.pth"
+            torch.save(state_dict, self.save_path / file_name)
+            fl.log(f"Saved: {file_name}")
 
-def generate_server_fn(context, eval_fn):
-    def create_server_fn(context_flwr: Context):
-        net               = TitanicModel.TitanicModel(context, num_classes=2, suffix=0)
-        global_model_init = ndarrays_to_parameters(get_params(net))
-        strategy = DifferentialPrivacyServerSideFixedClipping(
-            strategy=MyStrategy(
-                evaluate_fn=eval_fn,
-                on_fit_config_fn=fit_config,
-                on_evaluate_config_fn=fit_config,
-                evaluate_metrics_aggregation_fn=weighted_average,
-                initial_parameters=global_model_init,
-                fraction_fit=0.3,
-                min_fit_clients=3,
-                min_available_clients=3,  # <-- fix: aguarda clientes disponíveis
-            ),
-            noise_multiplier=0.1,
-            clipping_norm=1.0,
-            num_sampled_clients=3,
-        )
-        return ServerAppComponents(config=ServerConfig(num_rounds=50), strategy=strategy)
-    return create_server_fn
+    def evaluate(self, server_round, parameters):
+        """Run centralized evaluation, track best, and print round summary."""
+        loss, metrics = super().evaluate(server_round, parameters)
+
+        accuracy = metrics.get("ACCURACY", 0.0)
+        f1 = metrics.get("F1_SCORE", 0.0)
+
+        self.round_results.append({"round": server_round, "accuracy": accuracy, "F1_SCORE": f1})
+        self._update_best_acc(server_round, accuracy, parameters)
+
+        # Print per-round table sorted by accuracy
+        sorted_results = sorted(self.round_results, key=lambda x: x["accuracy"], reverse=True)
+        header = f"{'Round':>6}    {'Accuracy':>10}    {'F1':>10}"
+        fl.log(header)
+        fl.log("-" * len(header))
+        for r in sorted_results:
+            fl.log(f"{r['round']:>6}    {r['accuracy']:>10.6f}    {r['f1']:>10.6f}")
+
+        return loss, metrics
+
+
+def fit_config(server_round: int):
+    """
+    Configuração enviada para os clientes em cada rodada.
+    """
+    return {
+        "server_round": server_round,
+        "epochs": LOCAL_EPOCHS,
+    }
+
 
 def generate_client_fn(context):
+    """
+    Cria a função que instancia cada cliente federado.
+    """
+
     def create_client_fn(context_flwr: Context):
-        global partitions
-        cid     = int(context_flwr.node_config["partition-id"])
-        dataset = TitanicDataset.TitanicDataset(partitions[cid])
-        model   = TitanicModel.TitanicModel(context, num_classes=2, suffix=cid)
-        return TitanicExperiment.TitanicExperiment(model, dataset, context).to_client()
+        cid = int(context_flwr.node_config["partition-id"])
+
+        dataset = TitanicDataset.TitanicDataset(
+            csv_path=CSV_PATH,
+            client_id=cid,
+            num_clients=NUM_CLIENTS,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+        )
+
+        model = TitanicModel.TitanicModel(
+            context,
+            input_dim=dataset.input_dim,
+            suffix=cid,
+        )
+
+        experiment = TitanicExperiment.TitanicExperiment(
+            model,
+            dataset,
+            context,
+            epochs=LOCAL_EPOCHS,
+            lr=0.01,
+            momentum=0.9,
+        )
+
+        return experiment.to_client()
+
     return create_client_fn
 
+
 def evaluate_fn(context):
+    """
+    Avalia o modelo global em todas as partições de validação dos clientes
+    e agrega as métricas de forma ponderada pelo número de amostras.
+    """
+
     def fn(server_round, parameters, config):
-        global partitions
-        model      = TitanicModel.TitanicModel(context, num_classes=2, suffix="FL-Global")
-        model.set_parameters(parameters)
-        dataset    = TitanicDataset.TitanicDataset(partitions[0])
-        experiment = TitanicExperiment.TitanicExperiment(model, dataset, context)
-        config["server_round"] = server_round
-        loss, _, return_dic    = experiment.evaluate(parameters, config)
-        return loss, return_dic
+        total_examples = 0
+        weighted_loss = 0.0
+        weighted_accuracy = 0.0
+        weighted_f1 = 0.0
+
+        per_client_metrics = {}
+
+        for cid in range(NUM_CLIENTS):
+            dataset = TitanicDataset.TitanicDataset(
+                csv_path=CSV_PATH,
+                client_id=cid,
+                num_clients=NUM_CLIENTS,
+                batch_size=BATCH_SIZE,
+                shuffle=False,
+            )
+
+            model = TitanicModel.TitanicModel(
+                context,
+                input_dim=dataset.input_dim,
+                suffix=cid,
+            )
+            model.set_parameters(parameters)
+
+            experiment = TitanicExperiment.TitanicExperiment(
+                model,
+                dataset,
+                context,
+                epochs=LOCAL_EPOCHS,
+                lr=1e-3,
+            )
+
+            local_config = dict(config)
+            local_config["server_round"] = server_round
+
+            loss, num_examples, metrics = experiment.evaluate(parameters, local_config)
+
+            accuracy = metrics.get("ACCURACY", 0.0)
+            f1 = metrics.get("F1_SCORE", 0.0)
+
+            weighted_loss += loss * num_examples
+            weighted_accuracy += accuracy * num_examples
+            weighted_f1 += f1 * num_examples
+            total_examples += num_examples
+
+            per_client_metrics[f"client_{cid}_loss"] = float(loss)
+            per_client_metrics[f"client_{cid}_accuracy"] = float(accuracy)
+            per_client_metrics[f"client_{cid}_f1"] = float(f1)
+            per_client_metrics[f"client_{cid}_examples"] = int(num_examples)
+
+        if total_examples == 0:
+            return 0.0, {
+                "ACCURACY": 0.0,
+                "F1_SCORE": 0.0,
+                "total_examples": 0,
+            }
+
+        global_loss = weighted_loss / total_examples
+        global_accuracy = weighted_accuracy / total_examples
+        global_f1 = weighted_f1 / total_examples
+
+        global_metrics = {
+            "ACCURACY": float(global_accuracy),
+            "F1_SCORE": float(global_f1),
+            "total_examples": int(total_examples),
+        }
+
+        global_metrics.update(per_client_metrics)
+
+        return float(global_loss), global_metrics
+
     return fn
 
-titanic_df = load_and_preprocess()
-partitions = dirichlet_partition(titanic_df, n_clients=NUM_PARTITIONS, alpha=0.3, seed=42)
+def generate_server_fn(context, eval_fn, **kwargs):
+    """
+    Cria o servidor federado com estratégia FedAvg.
+    """
 
-if __name__ == '__main__':
+    def create_server_fn(context_flwr: Context):
+        # Criamos um dataset temporário só para descobrir input_dim
+        temp_dataset = TitanicDataset.TitanicDataset(
+            csv_path=CSV_PATH,
+            client_id=0,
+            num_clients=NUM_CLIENTS,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+        )
+
+        net = TitanicModel.TitanicModel(
+            context,
+            input_dim=temp_dataset.input_dim,
+            suffix="server_init",
+        )
+
+        ndarrays = get_params(net)
+        initial_parameters = ndarrays_to_parameters(ndarrays)
+
+        strategy = CustomFedAvg(
+            context=context,
+            input_dim=temp_dataset.input_dim,
+            evaluate_fn=eval_fn,
+            on_fit_config_fn=fit_config,
+            on_evaluate_config_fn=fit_config,
+            evaluate_metrics_aggregation_fn=weighted_average,
+            initial_parameters=initial_parameters,
+            fraction_fit=1.0,         # todos os clientes treinam
+            fraction_evaluate=1.0,    # todos os clientes podem avaliar
+            min_fit_clients=NUM_CLIENTS,
+            min_evaluate_clients=NUM_CLIENTS,
+            min_available_clients=NUM_CLIENTS,
+        )
+
+        config = ServerConfig(num_rounds=NUM_ROUNDS)
+
+        return ServerAppComponents(config=config, strategy=strategy)
+
+    return create_server_fn
+
+
+if __name__ == "__main__":
     context = fl.init()
-    fl.log("Flautim inicializado!!!")
-    client_fn_callback   = generate_client_fn(context)
+    fl.log("Flautim inicializado!")
+
+    client_fn_callback = generate_client_fn(context)
     evaluate_fn_callback = evaluate_fn(context)
-    server_fn_callback   = generate_server_fn(context, eval_fn=evaluate_fn_callback)
-    fl.log("Experimento federado Titanic com Differential Privacy criado!")
-    run_federated(client_fn_callback, server_fn_callback, num_clients=NUM_PARTITIONS)
+    server_fn_callback = generate_server_fn(context, eval_fn=evaluate_fn_callback)
+
+    fl.log("Experimento Titanic federado criado!")
+
+    run_federated(
+        client_fn_callback,
+        server_fn_callback,
+        num_clients=NUM_CLIENTS,
+    )

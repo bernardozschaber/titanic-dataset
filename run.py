@@ -19,7 +19,7 @@ from TitanicExperiment import get_params
 # -----------------------------
 # Configurações do experimento
 # -----------------------------
-NUM_CLIENTS = 10
+NUM_CLIENTS = 4
 CSV_PATH = "./data/titanic.csv"
 BATCH_SIZE = 32
 LOCAL_EPOCHS = 2

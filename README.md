@@ -48,7 +48,7 @@ Com essa visão geral, você está pronto para começar montar seus próprios ex
 
 ---
 
-## : 🚢 Passo 1: Criando o Dataset
+## 🚢 Passo 1: Criando o Dataset
 
 Um conjunto de dados no Flautim é acessado por um arquivo .py que deve conter uma classe que herda de Dataset.
 

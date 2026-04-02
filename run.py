@@ -19,7 +19,7 @@ from TitanicExperiment import get_params
 # -----------------------------
 # Configurações do experimento
 # -----------------------------
-NUM_CLIENTS = 4
+NUM_CLIENTS = 10
 CSV_PATH = "./data/titanic.csv"
 BATCH_SIZE = 32
 LOCAL_EPOCHS = 2
@@ -78,7 +78,7 @@ class CustomFedAvg(FedAvg):
         fl.log(header)
         fl.log("-" * len(header))
         for r in sorted_results:
-            fl.log(f"{r['round']:>6}    {r['accuracy']:>10.6f}    {r['f1']:>10.6f}")
+            fl.log(f"{r['round']:>6}    {r['accuracy']:>10.6f}    {r['F1_SCORE']:>10.6f}")
 
         return loss, metrics
 

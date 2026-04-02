@@ -26,7 +26,7 @@ O código desse tutorial pode ser acessado em: [clique aqui](./TUTORIAL_4/).
 - [Passo 2 — Criando o Modelo](#-passo-2-criando-o-modelo)
 - [Passo 3 — Criando o Experimento](#-passo-3-criando-o-experimento)
   - [Passo 3.1 — Experimento Federado](#-passo-31-experimento-federado)
-- [Passo 4 — Run.py](#-passo-4-runpy)
+- [Passo 4 — Criando a estratégia](#-passo-4-criando-a-estrategia)
 - [Referências](#referências)
 
 ---
@@ -273,7 +273,7 @@ class TitanicExperiment(Experiment):
         return float(avg_loss), {'ACCURACY': accuracy}
 ```
 
-## 🎯 Passo 4: Run.py
+## 🎯 Passo 4: Criando a estratégia
 
 **Implementando o run.py para realização de um experimento federado**
 

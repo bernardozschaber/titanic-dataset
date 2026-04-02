@@ -10,7 +10,7 @@
   </tr>
 </table>
 
-# TUTORIAL 5 - DATASET TITANIC, SELEÇÃO DE CLIENTES E PRIVACIDADE DIFERENCIAL
+# ⚓ TUTORIAL 5 - DATASET TITANIC, SELEÇÃO DE CLIENTES E PRIVACIDADE DIFERENCIAL
 
 Bem-vindo! Neste tutorial você aprenderá sobre a interface de programação da plataforma **Flautim** e também como montar um experimento simples de classificação usando o dataset [Titanic](https://huggingface.co/datasets/zalando-datasets/fashion_mnist) com **seleção de clientes** e **privacidade diferencial**.
 
@@ -20,7 +20,7 @@ O código desse tutorial pode ser acessado em: [clique aqui](./TUTORIAL_4/).
 
 ---
 
-## Tabela de Conteúdos
+## 📋 Tabela de Conteúdos
 
 - [Passo 1 — Criando o Dataset](#-passo-1-criando-o-dataset)
 - [Passo 2 — Criando o Modelo](#-passo-2-criando-o-modelo)
@@ -36,11 +36,11 @@ Todo projeto **Flautim** precisa herdar essa biblioteca, que contém submódulos
 
 Dentro de cada submódulo existem três componentes principais (classes):
 
-**1. Dataset:** é utilizado para representar os dados do experimento. Esta classe pode ser reutilizada em diversos experimentos e com diferentes modelos, sendo o componente mais versátil e reutilizável. Os usuários podem importar os dados de diversas fontes, como arquivos locais ou bases de dados online, desde que a classe Dataset seja herdada.
+**📊 1. Dataset:** é utilizado para representar os dados do experimento. Esta classe pode ser reutilizada em diversos experimentos e com diferentes modelos, sendo o componente mais versátil e reutilizável. Os usuários podem importar os dados de diversas fontes, como arquivos locais ou bases de dados online, desde que a classe Dataset seja herdada.
 
-**2. Model:** representa qualquer conjunto de parâmetros treináveis dentro do projeto. Ela permite a aplicação de técnicas de aprendizado de máquina por meio de treinamento desses parâmetros. No caso de PyTorch, a classe herda a nn.Module, que define a estrutura e os parâmetros treináveis do modelo.
+**⚙️ 2. Model:** representa qualquer conjunto de parâmetros treináveis dentro do projeto. Ela permite a aplicação de técnicas de aprendizado de máquina por meio de treinamento desses parâmetros. No caso de PyTorch, a classe herda a nn.Module, que define a estrutura e os parâmetros treináveis do modelo.
 
-**3. Experiment:** define o ciclo de treinamento e validação. Existem dois tipos principais de experimentos: o experimento centralizado, que segue o fluxo convencional de aprendizado de máquina, e o experimento federado, adaptado para aprendizado federado. Esta classe inclui duas funções principais, um loop de treinamento e um loop de validação, que realizam a atualização dos parâmetros e cálculo das métricas de custo, respectivamente.
+**🧪 3. Experiment:** define o ciclo de treinamento e validação. Existem dois tipos principais de experimentos: o experimento centralizado, que segue o fluxo convencional de aprendizado de máquina, e o experimento federado, adaptado para aprendizado federado. Esta classe inclui duas funções principais, um loop de treinamento e um loop de validação, que realizam a atualização dos parâmetros e cálculo das métricas de custo, respectivamente.
 
 Além desses três componentes principais, há também um módulo chamado Common. Este módulo fornece acesso a classes essenciais para o gerenciamento de dados e monitoramento do treinamento.
 
@@ -48,7 +48,7 @@ Com essa visão geral, você está pronto para começar montar seus próprios ex
 
 ---
 
-## 📦 Passo 1: Criando o Dataset
+## : 🚢 Passo 1: Criando o Dataset
 
 Um conjunto de dados no Flautim é acessado por um arquivo .py que deve conter uma classe que herda de Dataset.
 
@@ -174,7 +174,7 @@ O experimento é configurado no `run.py` com os seguintes parâmetros principais
 
 ---
 
-### 🤝 Passo 3.1: Experimento Federado
+### 🔒 Passo 3.1: Experimento Federado
 
 **Implementando a Classe TitanicExperiment**
 
@@ -496,7 +496,7 @@ if __name__ == '__main__':
 
 ---
 
-## Referências
+## 📚 Referências
 
 - [1] FUTURELAB-DCC. flautim_tutoriais. Disponível em: https://github.com/FutureLab-DCC/flautim_tutoriais/tree/main.
 

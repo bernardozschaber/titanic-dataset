@@ -1,3 +1,15 @@
+<table style="margin: auto; background-color: white;">
+  <tr>
+    <td style="background-color: white;"><img src='README/flautim.png' alt="Flautim" width="200" /></td>
+    <td style="background-color: white;"><img src='README/futurelab.png' alt="FutureLab" width="200" /></td>
+    <td style="background-color: white;"><img src='README/flautim.png' alt="Flautim" width="200" /></td>
+    <td style="background-color: white;"><img src='README/futurelab.png' alt="FutureLab" width="200" /></td>
+    <td style="background-color: white;"><img src='README/flautim.png' alt="Flautim" width="200" /></td>
+    <td style="background-color: white;"><img src='README/futurelab.png' alt="FutureLab" width="200" /></td>
+    <td style="background-color: white;"><img src='README/flautim.png' alt="Flautim" width="200" /></td>
+  </tr>
+</table>
+
 # TUTORIAL 5 - DATASET TITANIC, SELEÇÃO DE CLIENTES E PRIVACIDADE DIFERENCIAL
 
 Bem-vindo! Neste tutorial você aprenderá sobre a interface de programação da plataforma **Flautim** e também como montar um experimento simples de classificação usando o dataset [Titanic](https://huggingface.co/datasets/zalando-datasets/fashion_mnist) com **seleção de clientes** e **privacidade diferencial**.
@@ -6,7 +18,19 @@ Bem-vindo! Neste tutorial você aprenderá sobre a interface de programação da
 
 O código desse tutorial pode ser acessado em: [clique aqui](./TUTORIAL_4/).
 
-Vamos começar entendendo a interface de programação da **Flautim**, representada na figura abaixo. A **Flautim_api** é uma biblioteca modularizada que facilita a realização de experimentos de aprendizado de máquina, seja convencional/centralizado ou federado.
+---
+
+## Tabela de Conteúdos
+
+- [Passo 1 — Criando o Dataset](#-passo-1-criando-o-dataset)
+- [Passo 2 — Criando o Modelo](#-passo-2-criando-o-modelo)
+- [Passo 3 — Criando o Experimento](#-passo-3-criando-o-experimento)
+  - [Passo 3.1 — Experimento Federado](#-passo-31-experimento-federado)
+- [Referências](#referências)
+
+---
+
+Vamos começar entendendo a interface de programação da **Flautim**. A **Flautim_api** é uma biblioteca modularizada que facilita a realização de experimentos de aprendizado de máquina, seja convencional/centralizado ou federado.
 
 Todo projeto **Flautim** precisa herdar essa biblioteca, que contém submódulos específicos para diferentes tecnologias (por exemplo, submódulos para PyTorch, TensorFlow, etc). Neste tutorial usaremos o submódulo para PyTorch.
 
@@ -24,7 +48,7 @@ Com essa visão geral, você está pronto para começar montar seus próprios ex
 
 ---
 
-### Passo 1: Criando o dataset que será usado no experimento
+## 📦 Passo 1: Criando o Dataset
 
 Um conjunto de dados no Flautim é acessado por um arquivo .py que deve conter uma classe que herda de Dataset.
 
@@ -74,7 +98,7 @@ class TitanicDataset(Dataset):
 
 ---
 
-### Passo 2: Criando o modelo que será usado no experimento
+## 🧠 Passo 2: Criando o Modelo
 
 Agora, vamos criar a classe que implementa o modelo. Essa classe deve herdar da classe Model.
 
@@ -112,7 +136,7 @@ class TitanicModel(Model):
 
 ---
 
-### Passo 3: Criando o experimento
+## 🔬 Passo 3: Criando o Experimento
 
 Por fim, será criado o experimento, isto é, uma classe que implementa os loops de treinamento e validação do modelo TitanicModel no dataset TitanicDataset. Para isso, precisamos criar dois arquivos .py, o run.py (que deve ter obrigatoriamente esse nome) e o TitanicExperiment.py responsável por implementar o experimento, descritos a seguir:
 
@@ -150,7 +174,7 @@ O experimento é configurado no `run.py` com os seguintes parâmetros principais
 
 ---
 
-#### Passo 3.1: Experimento federado
+### 🤝 Passo 3.1: Experimento Federado
 
 **Implementando a Classe TitanicExperiment**
 
@@ -247,8 +271,6 @@ class TitanicExperiment(Experiment):
 
         return float(avg_loss), {'ACCURACY': accuracy}
 ```
-
----
 
 **Implementando o run.py para realização de um experimento federado**
 
@@ -474,7 +496,8 @@ if __name__ == '__main__':
 
 ---
 
-#### Referências
+## Referências
+
 - [1] FUTURELAB-DCC. flautim_tutoriais. Disponível em: https://github.com/FutureLab-DCC/flautim_tutoriais/tree/main.
 
 - [2] FLOWER LABS GMBH. Vertical Federated Learning with Flower. Disponível em: https://flower.ai/docs/examples/vertical-fl.html.

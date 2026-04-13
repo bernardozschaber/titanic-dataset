@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 class TitanicModel(Model):
     """
-    MLP simples para classificação binária no dataset Titanic.
+    MLP simples para classificação binária 
 
     Entrada:
         features tabulares já pré-processadas

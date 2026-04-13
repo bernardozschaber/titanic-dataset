@@ -62,39 +62,137 @@ from flautim.pytorch.Dataset import Dataset
 import torch
 import copy
 
-class TitanicDataset(Dataset):
-    def __init__(self, file, **kwargs):
-        super(TitanicDataset, self).__init__(name="TITANIC", **kwargs)
+from flautim.pytorch.Dataset import Dataset
+import pandas as pd
+import torch
+import numpy as np
+from torch.utils.data import DataLoader, Dataset as TorchDataset
+from sklearn.preprocessing import StandardScaler
 
-        self.features = file[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare',
-                               'Title', 'FamilySize', 'IsAlone', 'Embarked', 'Deck']].values
-        self.target = file['Survived'].values
 
-        self.xdtype = torch.float32
-        self.ydtype = torch.int64
-        self.batch_size = 32
-        self.shuffle = True
-        self.num_workers = 1
-        self.test_size = int(0.2 * len(self.features))
-
-    def train(self):
-        train = copy.deepcopy(self)
-        train.features = self.features[:-self.test_size]
-        train.target = self.target[:-self.test_size]
-        return copy.deepcopy(train)
-
-    def validation(self):
-        test = copy.deepcopy(self)
-        test.features = self.features[-self.test_size:]
-        test.target = self.target[-self.test_size:]
-        return copy.deepcopy(test)
+class TitanicTorchDataset(TorchDataset):
+    def __init__(self, X, y):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.y = torch.tensor(y, dtype=torch.long)
 
     def __len__(self):
-        return len(self.features)
+        return len(self.X)
 
     def __getitem__(self, idx):
-        return (torch.tensor(self.features[idx], dtype=torch.float32),
-                torch.tensor(self.target[idx], dtype=torch.long))
+        return {
+            "features": self.X[idx],
+            "label": self.y[idx]
+        }
+
+
+def dirichlet_partition(X, y, num_clients, alpha=0.5, seed=42):
+    np.random.seed(seed)
+
+    classes = np.unique(y)
+    client_indices = [[] for _ in range(num_clients)]
+
+    for cls in classes:
+        cls_indices = np.where(y == cls)[0]
+        np.random.shuffle(cls_indices)
+
+        proportions = np.random.dirichlet(alpha * np.ones(num_clients))
+        counts = (proportions * len(cls_indices)).astype(int)
+
+        diff = len(cls_indices) - counts.sum()
+        for i in range(abs(diff)):
+            counts[i % num_clients] += 1 if diff > 0 else -1
+
+        start = 0
+        for client_id in range(num_clients):
+            end = start + counts[client_id]
+            client_indices[client_id].extend(cls_indices[start:end])
+            start = end
+
+    for client_id in range(num_clients):
+        np.random.shuffle(client_indices[client_id])
+
+    return client_indices
+
+
+class TitanicDataset(Dataset):
+    def __init__(self, csv_path, client_id, num_clients=4, test_size=0.2, seed=42, **kwargs):
+        name = kwargs.get("name", "Titanic")
+        super(TitanicDataset, self).__init__(name, **kwargs)
+
+        self.batch_size = kwargs.get("batch_size", 32)
+        self.shuffle = kwargs.get("shuffle", True)
+
+        df = pd.read_csv(csv_path)
+
+        df = df[
+            [
+                "Pclass",
+                "Sex",
+                "Age",
+                "SibSp",
+                "Parch",
+                "Fare",
+                "Embarked",
+                "Survived",
+            ]
+        ].copy()
+
+        df["Age"] = df["Age"].fillna(df["Age"].median())
+        df["Embarked"] = df["Embarked"].fillna(df["Embarked"].mode()[0])
+
+        df["Sex"] = df["Sex"].map({"male": 0, "female": 1})
+        df = pd.get_dummies(df, columns=["Embarked"], drop_first=False)
+
+        for col in df.columns:
+            if df[col].dtype == "bool":
+                df[col] = df[col].astype(int)
+
+        X = df.drop(columns=["Survived"]).astype("float32").values
+        y = df["Survived"].astype("int64").values
+
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X).astype("float32")
+
+        if (
+            not hasattr(TitanicDataset, "_global_partition")
+            or not hasattr(TitanicDataset, "_partition_config")
+            or TitanicDataset._partition_config != (num_clients, seed)
+        ):
+            TitanicDataset._global_partition = dirichlet_partition(
+                X, y, num_clients=num_clients, alpha=0.5, seed=seed
+            )
+            TitanicDataset._partition_config = (num_clients, seed)
+
+        indices = TitanicDataset._global_partition[client_id]
+
+        X_client = X[indices]
+        y_client = y[indices]
+
+        split_idx = int((1 - test_size) * len(X_client))
+        self.X_train = X_client[:split_idx]
+        self.y_train = y_client[:split_idx]
+        self.X_test = X_client[split_idx:]
+        self.y_test = y_client[split_idx:]
+
+        self.train_partition = TitanicTorchDataset(self.X_train, self.y_train)
+        self.test_partition = TitanicTorchDataset(self.X_test, self.y_test)
+
+        self.input_dim = self.X_train.shape[1]
+
+    def train(self):
+        return self.train_partition
+
+    def validation(self):
+        return self.test_partition
+
+    def dataloader(self, validation=False):
+        dataset = self.validation() if validation else self.train()
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=(False if validation else self.shuffle),
+            num_workers=0,
+        )
 ```
 
 ---
@@ -112,26 +210,40 @@ A classe TitanicModel implementa uma rede neural totalmente conectada (MLP) para
 
 Essa classe deve ser incluída em um arquivo TitanicModel.py.
 
-```python
-from flautim.pytorch.Model import Model
+```from flautim.pytorch.Model import Model
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 
 class TitanicModel(Model):
-    def __init__(self, context, num_classes=2, **kwargs):
-        super(TitanicModel, self).__init__(context, name="TITANIC-NN", **kwargs)
+    """
+    MLP simples para classificação binária 
 
-        self.c1    = torch.nn.Linear(11, 64)
-        self.bn1   = torch.nn.BatchNorm1d(64)
-        self.drop1 = torch.nn.Dropout(0.3)
-        self.c2    = torch.nn.Linear(64, 32)
-        self.bn2   = torch.nn.BatchNorm1d(32)
-        self.drop2 = torch.nn.Dropout(0.2)
-        self.c3    = torch.nn.Linear(32, num_classes)
+    Entrada:
+        features tabulares já pré-processadas
+
+    Saída:
+        2 classes -> 0 (não sobreviveu), 1 (sobreviveu)
+    """
+
+    def __init__(self, context, input_dim: int, **kwargs) -> None:
+        super(TitanicModel, self).__init__(
+            context,
+            name="TitanicMLP",
+            version=1,
+            id=1,
+            **kwargs
+        )
+
+        self.hidden1 = nn.Linear(input_dim, 32)
+        self.hidden2 = nn.Linear(32, 16)
+        self.output_layer = nn.Linear(16, 2)
 
     def forward(self, x):
-        x = self.drop1(torch.relu(self.bn1(self.c1(x))))
-        x = self.drop2(torch.relu(self.bn2(self.c2(x))))
-        x = self.c3(x)
+        x = F.relu(self.hidden1(x))
+        x = F.relu(self.hidden2(x))
+        x = self.output_layer(x)
         return x
 ```
 
@@ -181,22 +293,24 @@ O experimento é configurado no `run.py` com os seguintes parâmetros principais
 
 No código abaixo, criamos a classe TitanicExperiment no modo federado com seus métodos `training_loop` e `validation_loop` para treinar e testar a rede neural. Esses métodos retornam o valor da função de perda e as métricas de treinamento e de validação.
 
-```python
-from flautim.pytorch.federated.Experiment import Experiment
-import flautim as fl
-import numpy as np
+```from flautim.pytorch.federated.Experiment import Experiment
 import torch
+import numpy as np
+
 from collections import OrderedDict
-from math import inf
+from sklearn.metrics import f1_score
+
 
 def set_params(model, parameters):
+    # Substitui os parâmetros do modelo pelos recebidos do servidor.
     params_dict = zip(model.state_dict().keys(), parameters)
-    state_dict  = OrderedDict({k: torch.from_numpy(v) for k, v in params_dict})
+    state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     model.load_state_dict(state_dict, strict=True)
 
 
 def get_params(model):
-    return [val.cpu().numpy() for _, val in model.state_dict().items()]
+    # Extrai os parâmetros do modelo como lista de NumPy arrays.
+    return [val.detach().cpu().numpy() for _, val in model.state_dict().items()]
 
 
 class TitanicExperiment(Experiment):
@@ -205,72 +319,106 @@ class TitanicExperiment(Experiment):
         super(TitanicExperiment, self).__init__(model, dataset, context, **kwargs)
 
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        self.epochs    = kwargs.get('epochs', 10)
-        self.device    = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.last_loss = inf
-        self.data_size = len(dataset.train().features)
+        self.optimizer = torch.optim.SGD(
+            self.model.parameters(),
+            lr=kwargs.get("lr", 0.01),
+            momentum=kwargs.get("momentum", 0.9),
+            weight_decay=kwargs.get("weight_decay", 0.0),
+        )
+        self.epochs = kwargs.get("epochs", 1)
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.data_size = len(dataset.train_partition)
 
     def fit(self, parameters, config):
+
+        # Método chamado pelo servidor em cada rodada federada.
         set_params(self.model, parameters)
+
         epochs = config.get("epochs", self.epochs)
 
-        if epochs == -1:
-            return parameters, 0, {"data_size": self.data_size}
+        self.model.to(self.device)
 
-        if epochs == 0:
-            local_loss, _ = self.validation_loop(self.dataset.dataloader(validation=True))
-            local_loss += np.random.uniform(low=1e-10, high=1e-9)
-            return parameters, 0, {"local_loss": local_loss}
+        final_loss = 0.0
+        final_metrics = {}
 
-        loss, metrics = self.training_loop(self.dataset.dataloader())
-        return get_params(self.model), self.data_size, metrics
+        for _ in range(epochs):
+            final_loss, final_metrics = self.training_loop(self.dataset.dataloader())
+
+        return get_params(self.model), self.data_size, final_metrics
 
     def training_loop(self, data_loader):
+
+        # Treinamento local no cliente.
+
         self.model.to(self.device)
         self.model.train()
 
-        running_loss, correct, total = 0.0, 0, 0
+        running_loss = 0.0
+        correct = 0
+        total = 0
 
-        for X, y in data_loader:
-            X, y = X.to(self.device), y.to(self.device).view(-1)
+        for batch in data_loader:
+            features = batch["features"].to(self.device)
+            labels = batch["label"].to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(X)
-            loss    = self.criterion(outputs, y)
+
+            outputs = self.model(features)
+            loss = self.criterion(outputs, labels)
+
             loss.backward()
             self.optimizer.step()
 
             running_loss += loss.item()
-            _, predicted  = torch.max(outputs, 1)
-            correct += (predicted == y).sum().item()
-            total   += y.size(0)
+            preds = torch.argmax(outputs, dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
 
-        avg_loss       = running_loss / len(data_loader)
-        accuracy       = correct / total if total > 0 else 0.0
-        self.last_loss = avg_loss
+        avg_loss = running_loss / len(data_loader) if len(data_loader) > 0 else 0.0
+        accuracy = correct / total if total > 0 else 0.0
 
-        return float(avg_loss), {'ACCURACY': accuracy}
+        return float(avg_loss), {"ACCURACY": accuracy}
 
     def validation_loop(self, data_loader):
+
+        # Avaliação local no conjunto de validação do cliente.
+        
         self.model.to(self.device)
         self.model.eval()
 
-        running_loss, correct, total = 0.0, 0, 0
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        all_predictions = []
+        all_labels = []
 
         with torch.no_grad():
-            for X, y in data_loader:
-                X, y    = X.to(self.device), y.to(self.device).view(-1)
-                outputs = self.model(X)
-                running_loss += self.criterion(outputs, y).item()
-                _, predicted  = torch.max(outputs, 1)
-                correct += (predicted == y).sum().item()
-                total   += y.size(0)
+            for batch in data_loader:
+                features = batch["features"].to(self.device)
+                labels = batch["label"].to(self.device)
 
-        avg_loss = running_loss / len(data_loader)
+                outputs = self.model(features)
+                loss = self.criterion(outputs, labels)
+
+                running_loss += loss.item()
+
+                preds = torch.argmax(outputs, dim=1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+
+                all_predictions.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
+        avg_loss = running_loss / len(data_loader) if len(data_loader) > 0 else 0.0
         accuracy = correct / total if total > 0 else 0.0
 
-        return float(avg_loss), {'ACCURACY': accuracy}
+        if len(set(all_labels)) > 1 and len(set(all_predictions)) > 1:
+            f1 = f1_score(all_labels, all_predictions, average="macro")
+        else:
+            f1 = 0.0
+
+        return float(avg_loss), {"ACCURACY": accuracy, "F1_SCORE": f1}
 ```
 
 ## 🎯 Passo 4: Criando a estratégia
@@ -307,194 +455,272 @@ Ao definirmos o servidor utilizamos `strategy = CustomFedAvg(...)` e todo o moni
 4. Se sim, constrói o `state_dict` do modelo a partir dos parâmetros recebidos e salva o checkpoint como `model_acc_<valor>_round_<N>.pth` em `outputs/<data>/<hora>/`
 5. Exibe uma tabela com todas as rodadas ordenadas por acurácia decrescente, permitindo identificar quais épocas produziram os melhores modelos globais
 
-```python
-from flautim.pytorch.common import run_federated, weighted_average
-from flautim.pytorch.federated import Experiment
-import TitanicDataset, TitanicModel, TitanicExperiment
+```from flautim.pytorch.common import run_federated, weighted_average
+import flautim as fl
+
+from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.server import ServerConfig, ServerAppComponents
+from flwr.server.strategy import FedAvg
+
+from collections import OrderedDict
+from datetime import datetime
+from pathlib import Path
+
+import torch
+
+import TitanicDataset
+import TitanicModel
+import TitanicExperiment
 from TitanicExperiment import get_params
 
-import flautim as fl
-import pandas as pd
-import numpy as np
-import torch
-from sklearn.preprocessing import StandardScaler
 
-from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays, Parameters, FitIns
-from flwr.server import ServerConfig, ServerAppComponents
-from flwr.server.strategy import FedAvg, DifferentialPrivacyServerSideFixedClipping
+# Configurações do experimento
 
-NUM_PARTITIONS = 10
-
-def load_and_preprocess():
-    titanic = pd.read_csv("./data/Titanic-Dataset.csv")
-    titanic['Sex']        = titanic['Sex'].map({'male': 0, 'female': 1})
-    titanic['Age']        = titanic['Age'].fillna(titanic['Age'].median())
-    titanic['Fare']       = titanic['Fare'].fillna(0.0)
-    titanic['Title']      = titanic['Name'].str.extract(r' ([A-Za-z]+)\.', expand=False)
-    titanic['Title']      = titanic['Title'].map({'Mr': 0, 'Miss': 1, 'Mrs': 2, 'Master': 3}).fillna(4)
-    titanic['FamilySize'] = titanic['SibSp'] + titanic['Parch'] + 1
-    titanic['IsAlone']    = (titanic['FamilySize'] == 1).astype(int)
-    titanic['Embarked']   = titanic['Embarked'].fillna('S').map({'S': 0, 'C': 1, 'Q': 2})
-    titanic['Deck']       = titanic['Cabin'].apply(lambda x: str(x)[0] if pd.notna(x) else 'U')
-    titanic['Deck']       = pd.factorize(titanic['Deck'])[0]
-    titanic = titanic[['Survived', 'Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare',
-                        'Title', 'FamilySize', 'IsAlone', 'Embarked', 'Deck']]
-    titanic = titanic.sample(frac=1, random_state=42).reset_index(drop=True)
-    scaler = StandardScaler()
-    numeric_cols = ['Age', 'Fare', 'Pclass', 'SibSp', 'Parch', 'FamilySize']
-    titanic[numeric_cols] = scaler.fit_transform(titanic[numeric_cols].astype(float))
-    return titanic
-
-def dirichlet_partition(df, n_clients, alpha=0.3, seed=42):
-    rng    = np.random.default_rng(seed)
-    labels = df['Survived'].values
-    classes = np.unique(labels)
-    client_indices = [[] for _ in range(n_clients)]
-    for cls in classes:
-        cls_indices = np.where(labels == cls)[0]
-        rng.shuffle(cls_indices)
-        proportions = rng.dirichlet(alpha=np.repeat(alpha, n_clients))
-        splits = (proportions * len(cls_indices)).astype(int)
-        splits[-1] = len(cls_indices) - splits[:-1].sum()
-        start = 0
-        for cid, count in enumerate(splits):
-            client_indices[cid].extend(cls_indices[start:start + count].tolist())
-            start += count
-    return [df.iloc[idx].reset_index(drop=True) for idx in client_indices]
+NUM_CLIENTS = 4
+CSV_PATH = "./data/titanic.csv"
+BATCH_SIZE = 32
+LOCAL_EPOCHS = 2
+NUM_ROUNDS = 20
 
 
-class MyStrategy(FedAvg):
-    def __init__(self, *args, **kwargs):
+class CustomFedAvg(FedAvg):
+
+    def __init__(self, context, input_dim, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.p = []
-        self.d = 5
-        self.m = self.min_fit_clients
-        self.round_accuracies = {}
-        self.best_acc_so_far  = 0.0
-        self.best_round       = None
+
+        self.best_acc_so_far = 0.0
+        self.round_results = []
+
+        run_dir = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
+        self.save_path = Path.cwd() / f"outputs/{run_dir}"
+        self.save_path.mkdir(parents=True, exist_ok=True)
+
+        self._context = context
+        self._input_dim = input_dim
+
+    def _update_best_acc(self, server_round, accuracy, parameters):
+
+        if accuracy > self.best_acc_so_far:
+            self.best_acc_so_far = accuracy
+            fl.log(f"New best global model found: {accuracy:.6f}")
+
+            ndarrays = parameters_to_ndarrays(parameters)
+            params_dict = zip(
+                TitanicModel.TitanicModel(
+                    self._context, input_dim=self._input_dim, suffix="tmp"
+                ).state_dict().keys(),
+                ndarrays,
+            )
+            state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+
+            file_name = f"model_acc_{accuracy:.6f}_round_{server_round}.pth"
+            torch.save(state_dict, self.save_path / file_name)
+            fl.log(f"Saved: {file_name}")
 
     def evaluate(self, server_round, parameters):
         loss, metrics = super().evaluate(server_round, parameters)
 
         accuracy = metrics.get("ACCURACY", 0.0)
-        self.round_accuracies[server_round] = accuracy
+        f1 = metrics.get("F1_SCORE", 0.0)
 
-        if accuracy > self.best_acc_so_far:
-            self.best_acc_so_far = accuracy
-            self.best_round      = server_round
-            print(f"  [Round {server_round}] New best global model: accuracy={accuracy:.6f}")
-            ndarrays  = parameters_to_ndarrays(parameters)
-            save_path = f"best_model_round_{server_round}_acc_{accuracy:.4f}.pth"
-            torch.save({"round": server_round, "accuracy": accuracy, "ndarrays": ndarrays}, save_path)
-            print(f"  Checkpoint saved -> {save_path}")
+        self.round_results.append({"round": server_round, "accuracy": accuracy, "F1_SCORE": f1})
+        self._update_best_acc(server_round, accuracy, parameters)
 
-        self._print_ranking()
+        sorted_results = sorted(self.round_results, key=lambda x: x["accuracy"], reverse=True)
+        header = f"{'Round':>6}    {'Accuracy':>10}    {'F1':>10}"
+        fl.log(header)
+        fl.log("-" * len(header))
+        for r in sorted_results:
+            fl.log(f"{r['round']:>6}    {r['accuracy']:>10.6f}    {r['F1_SCORE']:>10.6f}")
+
         return loss, metrics
 
-    def _print_ranking(self):
-        df = (
-            pd.DataFrame(
-                [(f"Round-{r}", acc) for r, acc in self.round_accuracies.items()],
-                columns=["Model", "Accuracy"],
-            )
-            .sort_values("Accuracy", ascending=False)
-            .reset_index(drop=True)
-        )
-        print("\n--- Model (Round) x Accuracy ---")
-        print(df.to_string())
-        print()
 
-    def configure_fit(self, server_round, parameters, client_manager):
-        client_manager.wait_for(self.m)
-        available_clients = list(client_manager.clients.values())
+def fit_config(server_round: int):
+    
+    # Configuração enviada para os clientes em cada rodada.
 
-        if not available_clients:
-            return []
+    return {
+        "server_round": server_round,
+        "epochs": LOCAL_EPOCHS,
+    }
 
-        if self.p == [] or len(self.p) != len(available_clients):
-            data_sizes = {
-                client.cid: client.fit(
-                    FitIns(parameters, {"epochs": -1}), timeout=60, group_id=str(client.cid)
-                ).metrics.get("data_size", 1)
-                for client in available_clients
-            }
-            total = sum(data_sizes.values()) or 1
-            p_np  = np.array([size / total for size in data_sizes.values()], dtype=float)
-            p_np  = np.clip(p_np, 1e-10, None)
-            p_np /= p_np.sum()
-            self.p = p_np.tolist()
-
-        n_candidates = min(self.d, len(available_clients))
-        candidate_clients = np.random.choice(
-            available_clients, size=n_candidates, p=self.p, replace=False
-        )
-        local_losses = {
-            client.cid: client.fit(
-                FitIns(parameters, {"epochs": 0}), timeout=60, group_id=str(client.cid)
-            ).metrics.get("local_loss", float("inf"))
-            for client in candidate_clients
-        }
-        selected_cids = sorted(local_losses, key=local_losses.get, reverse=True)[:self.m]
-        return [(client_manager.clients.get(cid), FitIns(parameters, {})) for cid in selected_cids]
-
-
-def fit_config(server_round):
-    return {"server_round": server_round}
-
-def generate_server_fn(context, eval_fn):
-    def create_server_fn(context_flwr: Context):
-        net               = TitanicModel.TitanicModel(context, num_classes=2, suffix=0)
-        global_model_init = ndarrays_to_parameters(get_params(net))
-        strategy = DifferentialPrivacyServerSideFixedClipping(
-            strategy=MyStrategy(
-                evaluate_fn=eval_fn,
-                on_fit_config_fn=fit_config,
-                on_evaluate_config_fn=fit_config,
-                evaluate_metrics_aggregation_fn=weighted_average,
-                initial_parameters=global_model_init,
-                fraction_fit=0.3,
-                min_fit_clients=3,
-                min_available_clients=3,
-            ),
-            noise_multiplier=0.1,
-            clipping_norm=1.0,
-            num_sampled_clients=3,
-        )
-        return ServerAppComponents(config=ServerConfig(num_rounds=50), strategy=strategy)
-    return create_server_fn
 
 def generate_client_fn(context):
+    
+    # Cria a função que instancia cada cliente federado.
+    
+
     def create_client_fn(context_flwr: Context):
-        global partitions
-        cid     = int(context_flwr.node_config["partition-id"])
-        dataset = TitanicDataset.TitanicDataset(partitions[cid])
-        model   = TitanicModel.TitanicModel(context, num_classes=2, suffix=cid)
-        return TitanicExperiment.TitanicExperiment(model, dataset, context).to_client()
+        cid = int(context_flwr.node_config["partition-id"])
+
+        dataset = TitanicDataset.TitanicDataset(
+            csv_path=CSV_PATH,
+            client_id=cid,
+            num_clients=NUM_CLIENTS,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+        )
+
+        model = TitanicModel.TitanicModel(
+            context,
+            input_dim=dataset.input_dim,
+            suffix=cid,
+        )
+
+        experiment = TitanicExperiment.TitanicExperiment(
+            model,
+            dataset,
+            context,
+            epochs=LOCAL_EPOCHS,
+            lr=0.01,
+            momentum=0.9,
+        )
+
+        return experiment.to_client()
+
     return create_client_fn
 
+
 def evaluate_fn(context):
+  
+    # Avalia o modelo global em todas as partições de validação dos clientes
+    # e agrega as métricas de forma ponderada pelo número de amostras.
+  
+
     def fn(server_round, parameters, config):
-        global partitions
-        model      = TitanicModel.TitanicModel(context, num_classes=2, suffix="FL-Global")
-        model.set_parameters(parameters)
-        dataset    = TitanicDataset.TitanicDataset(partitions[0])
-        experiment = TitanicExperiment.TitanicExperiment(model, dataset, context)
-        config["server_round"] = server_round
-        loss, _, return_dic    = experiment.evaluate(parameters, config)
-        return loss, return_dic
+        total_examples = 0
+        weighted_loss = 0.0
+        weighted_accuracy = 0.0
+        weighted_f1 = 0.0
+
+        per_client_metrics = {}
+
+        for cid in range(NUM_CLIENTS):
+            dataset = TitanicDataset.TitanicDataset(
+                csv_path=CSV_PATH,
+                client_id=cid,
+                num_clients=NUM_CLIENTS,
+                batch_size=BATCH_SIZE,
+                shuffle=False,
+            )
+
+            model = TitanicModel.TitanicModel(
+                context,
+                input_dim=dataset.input_dim,
+                suffix=cid,
+            )
+            model.set_parameters(parameters)
+
+            experiment = TitanicExperiment.TitanicExperiment(
+                model,
+                dataset,
+                context,
+                epochs=LOCAL_EPOCHS,
+                lr=1e-3,
+            )
+
+            local_config = dict(config)
+            local_config["server_round"] = server_round
+
+            loss, num_examples, metrics = experiment.evaluate(parameters, local_config)
+
+            accuracy = metrics.get("ACCURACY", 0.0)
+            f1 = metrics.get("F1_SCORE", 0.0)
+
+            weighted_loss += loss * num_examples
+            weighted_accuracy += accuracy * num_examples
+            weighted_f1 += f1 * num_examples
+            total_examples += num_examples
+
+            per_client_metrics[f"client_{cid}_loss"] = float(loss)
+            per_client_metrics[f"client_{cid}_accuracy"] = float(accuracy)
+            per_client_metrics[f"client_{cid}_f1"] = float(f1)
+            per_client_metrics[f"client_{cid}_examples"] = int(num_examples)
+
+        if total_examples == 0:
+            return 0.0, {
+                "ACCURACY": 0.0,
+                "F1_SCORE": 0.0,
+                "total_examples": 0,
+            }
+
+        global_loss = weighted_loss / total_examples
+        global_accuracy = weighted_accuracy / total_examples
+        global_f1 = weighted_f1 / total_examples
+
+        global_metrics = {
+            "ACCURACY": float(global_accuracy),
+            "F1_SCORE": float(global_f1),
+            "total_examples": int(total_examples),
+        }
+
+        global_metrics.update(per_client_metrics)
+
+        return float(global_loss), global_metrics
+
     return fn
 
-titanic_df = load_and_preprocess()
-partitions = dirichlet_partition(titanic_df, n_clients=NUM_PARTITIONS, alpha=0.3, seed=42)
+def generate_server_fn(context, eval_fn, **kwargs):
+   
+    # Cria o servidor federado com estratégia FedAvg.
 
-if __name__ == '__main__':
+    def create_server_fn(context_flwr: Context):
+        # Criamos um dataset temporário só para descobrir input_dim
+        temp_dataset = TitanicDataset.TitanicDataset(
+            csv_path=CSV_PATH,
+            client_id=0,
+            num_clients=NUM_CLIENTS,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+        )
+
+        net = TitanicModel.TitanicModel(
+            context,
+            input_dim=temp_dataset.input_dim,
+            suffix="server_init",
+        )
+
+        ndarrays = get_params(net)
+        initial_parameters = ndarrays_to_parameters(ndarrays)
+
+        strategy = CustomFedAvg(
+            context=context,
+            input_dim=temp_dataset.input_dim,
+            evaluate_fn=eval_fn,
+            on_fit_config_fn=fit_config,
+            on_evaluate_config_fn=fit_config,
+            evaluate_metrics_aggregation_fn=weighted_average,
+            initial_parameters=initial_parameters,
+            fraction_fit=1.0,         # todos os clientes treinam
+            fraction_evaluate=1.0,    # todos os clientes podem avaliar
+            min_fit_clients=NUM_CLIENTS,
+            min_evaluate_clients=NUM_CLIENTS,
+            min_available_clients=NUM_CLIENTS,
+        )
+
+        config = ServerConfig(num_rounds=NUM_ROUNDS)
+
+        return ServerAppComponents(config=config, strategy=strategy)
+
+    return create_server_fn
+
+
+if __name__ == "__main__":
     context = fl.init()
-    fl.log("Flautim inicializado!!!")
-    client_fn_callback   = generate_client_fn(context)
+    fl.log("Flautim inicializado!")
+
+    client_fn_callback = generate_client_fn(context)
     evaluate_fn_callback = evaluate_fn(context)
-    server_fn_callback   = generate_server_fn(context, eval_fn=evaluate_fn_callback)
-    fl.log("Experimento federado Titanic com Differential Privacy criado!")
-    run_federated(client_fn_callback, server_fn_callback, num_clients=NUM_PARTITIONS)
+    server_fn_callback = generate_server_fn(context, eval_fn=evaluate_fn_callback)
+
+    fl.log("Experimento Titanic federado criado!")
+
+    run_federated(
+        client_fn_callback,
+        server_fn_callback,
+        num_clients=NUM_CLIENTS,
+    )
 ```
 
 ---

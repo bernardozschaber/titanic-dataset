@@ -16,9 +16,9 @@ import TitanicModel
 import TitanicExperiment
 from TitanicExperiment import get_params
 
-# -----------------------------
+
 # Configurações do experimento
-# -----------------------------
+
 NUM_CLIENTS = 4
 CSV_PATH = "./data/titanic.csv"
 BATCH_SIZE = 32
@@ -27,7 +27,6 @@ NUM_ROUNDS = 20
 
 
 class CustomFedAvg(FedAvg):
-    """FedAvg extended to save the best global model per round based on accuracy."""
 
     def __init__(self, context, input_dim, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -35,7 +34,6 @@ class CustomFedAvg(FedAvg):
         self.best_acc_so_far = 0.0
         self.round_results = []
 
-        # Create timestamped output directory
         run_dir = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
         self.save_path = Path.cwd() / f"outputs/{run_dir}"
         self.save_path.mkdir(parents=True, exist_ok=True)
@@ -44,7 +42,7 @@ class CustomFedAvg(FedAvg):
         self._input_dim = input_dim
 
     def _update_best_acc(self, server_round, accuracy, parameters):
-        """Save model checkpoint when a new best accuracy is found."""
+
         if accuracy > self.best_acc_so_far:
             self.best_acc_so_far = accuracy
             fl.log(f"New best global model found: {accuracy:.6f}")
@@ -63,7 +61,6 @@ class CustomFedAvg(FedAvg):
             fl.log(f"Saved: {file_name}")
 
     def evaluate(self, server_round, parameters):
-        """Run centralized evaluation, track best, and print round summary."""
         loss, metrics = super().evaluate(server_round, parameters)
 
         accuracy = metrics.get("ACCURACY", 0.0)
@@ -72,7 +69,6 @@ class CustomFedAvg(FedAvg):
         self.round_results.append({"round": server_round, "accuracy": accuracy, "F1_SCORE": f1})
         self._update_best_acc(server_round, accuracy, parameters)
 
-        # Print per-round table sorted by accuracy
         sorted_results = sorted(self.round_results, key=lambda x: x["accuracy"], reverse=True)
         header = f"{'Round':>6}    {'Accuracy':>10}    {'F1':>10}"
         fl.log(header)
@@ -84,9 +80,9 @@ class CustomFedAvg(FedAvg):
 
 
 def fit_config(server_round: int):
-    """
-    Configuração enviada para os clientes em cada rodada.
-    """
+    
+    # Configuração enviada para os clientes em cada rodada.
+
     return {
         "server_round": server_round,
         "epochs": LOCAL_EPOCHS,
@@ -94,9 +90,9 @@ def fit_config(server_round: int):
 
 
 def generate_client_fn(context):
-    """
-    Cria a função que instancia cada cliente federado.
-    """
+    
+    # Cria a função que instancia cada cliente federado.
+    
 
     def create_client_fn(context_flwr: Context):
         cid = int(context_flwr.node_config["partition-id"])
@@ -130,10 +126,10 @@ def generate_client_fn(context):
 
 
 def evaluate_fn(context):
-    """
-    Avalia o modelo global em todas as partições de validação dos clientes
-    e agrega as métricas de forma ponderada pelo número de amostras.
-    """
+  
+    # Avalia o modelo global em todas as partições de validação dos clientes
+    # e agrega as métricas de forma ponderada pelo número de amostras.
+  
 
     def fn(server_round, parameters, config):
         total_examples = 0
@@ -209,9 +205,8 @@ def evaluate_fn(context):
     return fn
 
 def generate_server_fn(context, eval_fn, **kwargs):
-    """
-    Cria o servidor federado com estratégia FedAvg.
-    """
+   
+    # Cria o servidor federado com estratégia FedAvg.
 
     def create_server_fn(context_flwr: Context):
         # Criamos um dataset temporário só para descobrir input_dim

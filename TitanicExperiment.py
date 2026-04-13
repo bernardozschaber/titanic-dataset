@@ -7,21 +7,18 @@ from sklearn.metrics import f1_score
 
 
 def set_params(model, parameters):
-    """Substitui os parâmetros do modelo pelos recebidos do servidor."""
+    # Substitui os parâmetros do modelo pelos recebidos do servidor.
     params_dict = zip(model.state_dict().keys(), parameters)
     state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     model.load_state_dict(state_dict, strict=True)
 
 
 def get_params(model):
-    """Extrai os parâmetros do modelo como lista de NumPy arrays."""
+    # Extrai os parâmetros do modelo como lista de NumPy arrays.
     return [val.detach().cpu().numpy() for _, val in model.state_dict().items()]
 
 
 class TitanicExperiment(Experiment):
-    """
-    Experimento federado simples para o dataset Titanic.
-    """
 
     def __init__(self, model, dataset, context, **kwargs):
         super(TitanicExperiment, self).__init__(model, dataset, context, **kwargs)
@@ -38,9 +35,8 @@ class TitanicExperiment(Experiment):
         self.data_size = len(dataset.train_partition)
 
     def fit(self, parameters, config):
-        """
-        Método chamado pelo servidor em cada rodada federada.
-        """
+
+        # Método chamado pelo servidor em cada rodada federada.
         set_params(self.model, parameters)
 
         epochs = config.get("epochs", self.epochs)
@@ -56,9 +52,9 @@ class TitanicExperiment(Experiment):
         return get_params(self.model), self.data_size, final_metrics
 
     def training_loop(self, data_loader):
-        """
-        Treinamento local no cliente.
-        """
+
+        # Treinamento local no cliente.
+
         self.model.to(self.device)
         self.model.train()
 
@@ -89,9 +85,9 @@ class TitanicExperiment(Experiment):
         return float(avg_loss), {"ACCURACY": accuracy}
 
     def validation_loop(self, data_loader):
-        """
-        Avaliação local no conjunto de validação do cliente.
-        """
+
+        # Avaliação local no conjunto de validação do cliente.
+        
         self.model.to(self.device)
         self.model.eval()
 
